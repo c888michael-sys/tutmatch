@@ -10,8 +10,8 @@
 |---|---|---|
 | 1 | Remove all verification claims site-wide | ✅ Complete |
 | 2 | Remove parent payment; add the free "I want this tutor" Match flow | ✅ Complete |
-| 3 | Confirmation flow + strike system + tutor commission (Stripe) | 🚧 Mostly landed — Stripe still simulated |
-| 4 | WWCC reframe + admin pivot + auto-approval | 🚧 Partially landed — **under-18 gate removed but NOT replaced** (see blockers) |
+| 3 | Confirmation flow + strike system + tutor commission (Stripe) | 🚧 Mostly landed — Stripe in simulation; real charges + Permanent Checkout deferred |
+| 4 | WWCC reframe + admin pivot + auto-approval | 🚧 Partially landed — OTP/Turnstile deferred; **under-18 gate removed but NOT replaced** (see blockers) |
 | 5 | Automation hardening + audit logging + retention | ⬜ Not started |
 
 > ⚠️ **This table drifted from the code.** Sessions 3 and 4 have commits on `main` (`73a83fa`, `b177a76`, `8227c1c`, `f2ef4ff`, …) even though they were previously marked "Not started". **Trust `git log` over this table** until the two are reconciled. The drift is not cosmetic: it is how the under-18 launch blocker below went unnoticed. Verify the current commit yourself rather than relying on a hardcoded hash here.
@@ -785,7 +785,7 @@ Goal: rip out the unlock-fee transaction; introduce the free-intent-button flow 
 - [x] `npm run build` passes
 - [x] **Commit message lead:** "Session 2: replace parent-pays unlock with free 'I want this tutor' intent capture + Match data model"
 
-### Session 3 — Confirmation flow + strike system + tutor commission
+### Session 3 — Confirmation flow + strike system + tutor commission 🟡 MOSTLY COMPLETE
 
 Goal: build the post-match resolution flow (self-report, parent confirmation, strike system, payment).
 
@@ -804,24 +804,24 @@ Goal: build the post-match resolution flow (self-report, parent confirmation, st
 | **Add** 14-day refund window enforcement for permanent purchases | API + UI |
 
 **Definition of Done (Session 3):**
-- [ ] Tutor dashboard shows pending matches with a "Self-report — did you book a lesson? (charges $15)" button on each
-- [ ] `POST /api/matches/[id]/self-report` works, charges via Stripe Connect, clears hiddenUntil
-- [ ] Parent receives confirmation email at 48h (via Resend stub or console.log; full wiring in session 5)
-- [ ] Parent-confirm email link works without auth — token-validated
-- [ ] `POST /api/matches/[id]/parent-confirm` charges $20 on YES, no charge on NO, schedules reminder on NOT_YET
-- [ ] Strike system: `strikeCount` increments correctly; profile hidden for 7d on strike 1, 30d on strike 2, permanent on strike 3+
+- [x] Tutor dashboard shows pending matches with a "Self-report — did you book a lesson?" button on each
+- [x] `POST /api/matches/[id]/self-report` works, charges (currently via the simulation layer in `src/lib/stripe.ts`), clears hiddenUntil
+- [x] Parent receives confirmation email at 48h (`console.log` stub today; wired to a real provider in session 5)
+- [x] Parent-confirm email link works without auth — token-validated
+- [x] `POST /api/matches/[id]/parent-confirm` charges $20 on YES, no charge on NO, schedules reminder on NOT_YET
+- [x] Strike system: `strikeCount` increments correctly; profile hidden for 7d on strike 1, 30d on strike 2, permanent on strike 3+
 - [ ] Strike re-listing: paying the missed $20 lifts the temporary hide
-- [ ] Strike 3+: per-match cost is $20 with no honesty discount (codified in pricing logic)
-- [ ] `POST /api/matches/[id]/appeal` works; evidence uploads stored; admin queue at `/admin/appeals` displays pending appeals
-- [ ] Admin can approve/reject appeal; approval charges $20, rejection applies strike
+- [x] Strike 3+: per-match cost is $20 with no honesty discount (codified via the `noHonestyDiscount` flag)
+- [x] `POST /api/matches/[id]/appeal` works; evidence uploads stored; admin queue at `/admin/appeals` displays pending appeals
+- [x] Admin can approve/reject appeal; approval charges $20, rejection applies strike
 - [ ] Bank-transfer name-match check: simple OCR-or-filename pattern detection that surfaces "looks like a name match" hint to admin (doesn't auto-approve, just suggests)
-- [ ] Permanent listing: `POST /api/tutor/permanent` creates Stripe Checkout; webhook handles completion; tutor.permanentListing = true
-- [ ] Permanent refund within 14 days works via `/api/tutor/permanent/refund`
-- [ ] Permanent-listing tutors are skipped from commission charges
-- [ ] `npm run build` passes
-- [ ] **Commit message lead:** "Session 3: build the match-confirmation flow, strikes, appeals, and tutor-side Stripe commission"
+- [ ] Permanent listing: `POST /api/tutor/permanent` creates Stripe Checkout; webhook handles completion; tutor.permanentListing = true — _deferred until `STRIPE_SIMULATE=false`_
+- [ ] Permanent refund within 14 days works via `/api/tutor/permanent/refund` — _deferred with Permanent purchase_
+- [ ] Permanent-listing tutors are skipped from commission charges — _goes in the real-Stripe charge path_
+- [x] `npm run build` passes
+- [x] **Commit message lead:** "Session 3: build the match-confirmation flow, strikes, appeals, and tutor-side Stripe commission" — _shipped across `dac8582` (non-Stripe) + `2c24f0b`/`f2ef4ff` (Stripe scaffold + simulation)_
 
-### Session 4 — WWCC reframe + admin pivot + auto-approval flow
+### Session 4 — WWCC reframe + admin pivot + auto-approval flow 🟡 IN PROGRESS
 
 | Change | Notes |
 |---|---|
@@ -841,24 +841,24 @@ Goal: build the post-match resolution flow (self-report, parent confirmation, st
 | Re-test all the disclaimers, footer copy, and the "What TUTUMatch is and isn't" page | All-pages pass |
 
 **Definition of Done (Session 4):**
-- [ ] Phone OTP integration (Twilio Verify or similar) works at signup
-- [ ] Tutor cannot list until phone is verified
-- [ ] Cloudflare Turnstile (or equivalent) on signup form + contact-request form
-- [ ] Bio content scanner (`src/lib/content-scanner.ts`) flags scam/spam/contact-info patterns
-- [ ] New tutor signup with no flags: status = AUTO_APPROVED, instantly public
-- [ ] New tutor signup with flags: status = PENDING_REVIEW, admin sees it in queue
-- [ ] WWCC info on tutor signup form labelled "we ask so you have it ready for parents — we don't verify"
-- [ ] Tutor's own dashboard shows their WWCC info privately (for them to copy when a parent asks)
-- [ ] Public tutor profile page does NOT show WWCC info (or any platform-stamped verification)
-- [ ] `/tutors/[id]` shows a "Verify this tutor's WWCC yourself with the NSW OCG" link next to where verification was
-- [ ] Admin approval queue copy reframed to "spam/abuse moderation" — no credential review
+- [ ] Phone OTP integration (Twilio Verify or similar) works at signup — _blocked on Twilio account_
+- [ ] Tutor cannot list until phone is verified — _depends on OTP_
+- [ ] Cloudflare Turnstile (or equivalent) on signup form + contact-request form — _blocked on Cloudflare account_
+- [x] Bio content scanner (`src/lib/content-scanner.ts`) flags scam/spam/contact-info patterns
+- [x] New tutor signup with no flags: status = AUTO_APPROVED, instantly public
+- [x] New tutor signup with flags: status = PENDING_REVIEW, admin sees it in queue
+- [x] WWCC info on tutor signup form labelled "we ask so you have it ready for parents — we don't verify"
+- [x] Tutor's own dashboard shows their WWCC info privately (for them to copy when a parent asks)
+- [x] Public tutor profile page does NOT show WWCC info (or any platform-stamped verification)
+- [x] `/tutors/[id]` shows a "Verify this tutor's WWCC yourself with the NSW OCG" link next to where verification was
+- [x] Admin approval queue copy reframed to "spam/abuse moderation" — no credential review
 - [x] Under-18 auto-reject **removed** (commit `73a83fa`)
 - [ ] ⚠️ **NOT DONE — launch blocker 1:** the required age-attestation tickbox that was meant to *replace* the auto-reject was never built. Right now nothing gates DOB at all, yet Terms §11 still promises under-18 applications are "automatically rejected." Either reinstate the API-layer reject or ship the attestation **and** reconcile Terms §11 + Privacy before launch.
-- [ ] Verification document upload block removed from signup form (it's all private uploads now, optional)
-- [ ] Indemnity clause updated in Terms — narrower scope, directory framing
-- [ ] Privacy Policy updated to reflect reduced data collection
-- [ ] `npm run build` passes
-- [ ] **Commit message lead:** "Session 4: auto-approval flow, phone OTP, WWCC reframe, admin pivot to spam-only"
+- [ ] Verification document upload block removed from signup form — _reframed as optional, tutor-private uploads (the README's softer reading) rather than deleted_
+- [ ] Indemnity clause updated in Terms — narrower scope, directory framing — _partial: framing updated in Sessions 1–2; full legal rewrite left for lawyer review_
+- [ ] Privacy Policy updated to reflect reduced data collection — _partial: stale verified-marketplace bits cleaned; full rewrite left for lawyer review_
+- [x] `npm run build` passes
+- [ ] **Commit message lead:** "Session 4: auto-approval flow, phone OTP, WWCC reframe, admin pivot to spam-only" — _multiple commits with subject-specific leads; OTP work deferred_
 
 ### Session 5 — Automation hardening + audit logging + retention policies
 
