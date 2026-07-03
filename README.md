@@ -10,11 +10,28 @@
 |---|---|---|
 | 1 | Remove all verification claims site-wide | ✅ Complete |
 | 2 | Remove parent payment; add the free "I want this tutor" Match flow | ✅ Complete |
-| 3 | Confirmation flow + strike system + tutor commission (Stripe) | ⬜ **Next** |
-| 4 | WWCC reframe + admin pivot + auto-approval | ⬜ Not started |
+| 3 | Confirmation flow + strike system + tutor commission (Stripe) | 🚧 Mostly landed — Stripe still simulated |
+| 4 | WWCC reframe + admin pivot + auto-approval | 🚧 Partially landed — **under-18 gate removed but NOT replaced** (see blockers) |
 | 5 | Automation hardening + audit logging + retention | ⬜ Not started |
 
-Latest commit: [`9b9b454`](https://github.com/c888michael-sys/TUTUMatch/commit/9b9b454). `npm run build` passes.
+> ⚠️ **This table drifted from the code.** Sessions 3 and 4 have commits on `main` (`73a83fa`, `b177a76`, `8227c1c`, `f2ef4ff`, …) even though they were previously marked "Not started". **Trust `git log` over this table** until the two are reconciled. The drift is not cosmetic: it is how the under-18 launch blocker below went unnoticed. Verify the current commit yourself rather than relying on a hardcoded hash here.
+
+## 🚨 Legal launch blockers — do NOT deploy publicly until these are cleared
+
+A legal-risk assessment on 2026-07-02 found the pivot's *reasoning* sound but the *current build* unsafe to launch, mainly because code changes outran the legal copy and the auth/privacy surface. These are ranked; 🔴 must be fixed before any public exposure.
+
+| # | Blocker | Where | Level |
+|---|---|---|---|
+| 1 | **Under-18 tutors can list, but the Terms still promise they're auto-rejected.** Commit `73a83fa` removed the API-layer DOB auto-reject; the planned replacement (age-attestation checkbox, DoD item in Session 4) was never built, so `POST /api/tutor/applications` auto-approves any clean listing regardless of DOB. Meanwhile Terms §11 still says under-18 applications are "automatically rejected" and Privacy says we don't knowingly collect under-18 data. A minor's listing + a promise-we-broke is the single fact that most undermines the directory defence. | `src/app/api/tutor/applications/route.ts`, `src/app/legal/terms/page.tsx` §11, `src/app/legal/privacy/page.tsx` | 🔴 |
+| 2 | **PII / WWCC breach vectors.** (a) `ADMIN_EMAILS` auto-promotes at signup with no email-ownership check, and the admin address ships in `.env.example` → first person to register it owns every WWCC/ID doc. (b) `session.ts` falls back to a hardcoded dev secret (public in this repo) if `NEXTAUTH_SECRET` is unset → forgeable admin cookie. (c) `POST /api/matches/request` is unauthenticated, unthrottled, and returns each tutor's full name + phone + email → scrapeable contact base (and silently hides the listing 48h). (d) Privacy says docs are "encrypted at rest" but they sit in plaintext on the local filesystem. | `src/app/api/auth/signup/route.ts`, `src/lib/session.ts`, `src/app/api/matches/request/route.ts`, `src/lib/uploads.ts` | 🔴 |
+| 3 | **Legal pages describe systems that don't exist yet.** The audit trail (IP/UA/terms-version) the "self-attestation under audit risk" model relies on is Session 5 (unbuilt); applications store no IP/UA. The strike **reinstatement fees** ($20 after strikes 1–3; perpetual $20 rate after strike 3) are in code + README but appear nowhere in the Terms the tutor accepts. Charging for terms the user never agreed to, plus copy that overstates the service, is ACL exposure. | `src/app/legal/*`, `src/lib/strike.ts` | 🟠 |
+| 4 | **Real schools published without permission.** `SEED_SCHOOLS` ships Killara High School and Masada College with `active: true`; the seed writes them live, using real names/brand colours to imply association. The schema even has `permissionEvidenceUrl` and the README warns "get written permission first" — the seeded default ignores it. | `src/lib/schools.ts`, `prisma/seed.ts` | 🟠 |
+
+**Also flagged (lower priority):** unfair-contract-terms review of the tutor indemnity breadth + unilateral variation/revocation clauses (get counsel); wrongful-charge/griefing risk from the unverified match endpoint (ties to blocker 2); this repo is **public** and contains candid defence-cost strategy, the admin email, and exact abuse thresholds ("3 reports in 30 days") — consider making it private; substantiate landing-page figures ("tutors typically $60–80/hr", centres "40–60%") or soften them (ACL/ACCC advertising); add a LICENSE and run a trademark/`.com.au` check on the name.
+
+The full severity × likelihood write-up lives in the assessment that produced this list — the four 🔴/🟠 items map to risks R1–R4 there. Counsel review (already budgeted in *Founder / legal → Phase 2*) should cover blockers 1, 2, and the indemnity terms; **do not self-clear blocker 1.**
+
+➡️ **Step-by-step fix instructions for every blocker are in [Session 0 — Launch blocker remediation](#session-0--launch-blocker-remediation-do-these-before-anything-else), just before the Pivot work plan.** Do that session first; it gates public launch.
 
 **Where do I find things in this README?**
 
@@ -556,6 +573,144 @@ DELETE /api/user/account                 # self-service: soft-delete account + 3
 
 ---
 
+## Session 0 — Launch blocker remediation (do these before anything else)
+
+> This section is the fix plan for the four blockers listed at the top of the README. It is written to be followed by a worker (human or AI) with no other context. Do the 🔴 items before any public deploy. Each work order is self-contained: **Goal → Files → Steps → Acceptance → Guardrails.** After each work order, run `npm run typecheck && npm run build` and commit (see *Push discipline* in the hand-off guide). Do not batch all four into one commit — one commit per blocker so they're reviewable.
+
+**Before you start, one product decision is needed for Blocker 1** (does the platform allow 16–17-year-old tutors at all?). If the answer isn't already recorded in the chat or decision log, **ask the founder before writing code** — it changes which option you implement. Default if no answer: Option A (hard reject under-18), which needs no lawyer.
+
+---
+
+### Blocker 1 🔴 — Under-18 tutors can list, but Terms promise they're rejected
+
+**Goal:** No under-18 applicant can produce a live listing, AND the Terms + Privacy copy exactly match whatever behaviour ships. Today `POST /api/tutor/applications` auto-approves any clean listing regardless of date of birth, while Terms §11 still says under-18 applications are "automatically rejected." Close that gap.
+
+**Files:**
+- `src/lib/tutor-form.ts` — the `ageInYears(isoDate)` helper already exists (near the bottom); `tutorApplicationSchema` is the zod schema; `tutorIndemnityAccepted: z.literal(true, …)` is the checkbox-field pattern to copy.
+- `src/app/api/tutor/applications/route.ts` — `statusFromScan()` and the POST + PUT handlers (the auto-approve lives here).
+- `src/components/tutor/SignupForm.tsx` — the `indemnity-accept` `<label>` block (Section 9 of the form) is the checkbox UI to mirror.
+- `src/app/legal/terms/page.tsx` (§11) and `src/app/legal/privacy/page.tsx` (the "Children" paragraph).
+
+**Steps — Option A (hard reject under-18, RECOMMENDED, no counsel needed):**
+1. In `src/app/api/tutor/applications/route.ts`, add `import { ageInYears } from "@/lib/tutor-form";`.
+2. In **both** the POST and PUT handlers, immediately after `const v = parsed.data;`, add:
+   ```ts
+   const age = ageInYears(v.dateOfBirth);
+   if (age < 18) {
+     const now = new Date().toISOString();
+     const rejected = { /* build the same application object as the normal path, but: */
+       status: "REJECTED" as ApplicationStatus,
+       reviewedAt: now,
+       reviewerEmail: "auto",
+       reviewerNotes: `Auto-rejected: DOB ${v.dateOfBirth} → age ${age} < 18.`,
+       // …all the same field mappings (firstName, dateOfBirth, wwcc*, etc.)…
+     };
+     await upsertApplication(rejected);
+     return NextResponse.json({ ok: true, applicationId: rejected.id, status: "REJECTED" }, { status: 200 });
+   }
+   ```
+   Persist the row (don't 400 / silently drop) so there is an audit trail of the attempt, matching what §11 and the audit-trail model promise.
+3. Defence-in-depth: add a self-attestation field to the schema. In `tutor-form.ts`, next to `tutorIndemnityAccepted`, add:
+   ```ts
+   is18PlusAttested: z.literal(true, {
+     errorMap: () => ({ message: "You must confirm you are 18 or older to list as a tutor." }),
+   }),
+   ```
+4. In `SignupForm.tsx`, add `const [is18Plus, setIs18Plus] = useState(false);`, render a checkbox by copying the `indemnity-accept` label block (change the copy to "I confirm I am 18 years or older"), and include `is18PlusAttested: is18Plus` in the submit payload alongside `tutorIndemnityAccepted`.
+5. Confirm no doc change is needed: Terms §11 already says "automatically rejected" (now true) and Privacy's "Children" paragraph says you don't knowingly collect under-18 data (now true). Leave both as-is.
+
+**Steps — Option B (allow 16–17 with attestation — DO NOT ship without counsel):** do not reject; instead require the age attestation, add parental-consent handling, and **rewrite Terms §11, the Privacy "Children" section, and the Child Safety page** together. Note NSW under-18 workers are generally exempt from holding a WWCC, so the currently-mandatory WWCC fields (`wwccNumber`, `wwccFullName`, `wwccDob`) must become conditional for under-18 applicants. Flag for counsel sign-off before merge.
+
+**Acceptance criteria:**
+- [ ] POST and PUT with a DOB implying age < 18 → application stored with `status: "REJECTED"`; no `APPROVED` row is created; the tutor never appears in `/browse`.
+- [ ] The response is `200` with `status: "REJECTED"` (not a `400`), so the client shows a rejection banner rather than a form error.
+- [ ] POST/PUT with `is18PlusAttested` absent or `false` → `400` validation error.
+- [ ] The statement in Terms §11 matches the behaviour that actually shipped (A or B).
+- [ ] `npm run typecheck` and `npm run build` pass.
+
+**Guardrails:** the server is authoritative — never rely on the client checkbox alone. Never silently discard an under-18 submission (that destroys the audit trail §11 relies on). Do not ship Option B without recorded counsel sign-off.
+
+---
+
+### Blocker 2 🔴 — PII / WWCC breach vectors (four sub-fixes)
+
+**Goal:** Close the four cheap paths into the tutor identity/WWCC/ID store. Each sub-fix is independent; do all four.
+
+**2a — `ADMIN_EMAILS` self-promotion at signup**
+- File: `src/app/api/auth/signup/route.ts` (the `if (isAdminEmail(email)) role = "ADMIN"` line, ~line 30).
+- Step: **delete that promotion.** Self-registration must never grant ADMIN. Admin accounts get their role set out-of-band — via a seed/migration script or an existing admin flipping the role in the store. Keep `isAdminEmail` for any server-side gate, but not as a signup side effect.
+- Acceptance: registering an address listed in `ADMIN_EMAILS` yields a non-admin role; there is no self-serve path to ADMIN.
+
+**2b — hardcoded session-secret fallback**
+- File: `src/lib/session.ts`, the `secret()` function (~line 8).
+- Step: make production refuse the public dev fallback:
+  ```ts
+  function secret(): string {
+    const s = process.env.NEXTAUTH_SECRET;
+    if (s && s.length >= 16) return s;
+    if (process.env.NODE_ENV === "production") {
+      throw new Error("NEXTAUTH_SECRET must be set (>=16 chars) in production.");
+    }
+    return "dev-only-not-secure-replace-me-in-env-local";
+  }
+  ```
+- Acceptance: with `NODE_ENV=production` and no `NEXTAUTH_SECRET`, the app throws instead of signing cookies with the public constant; dev is unchanged.
+
+**2c — unauthenticated, unthrottled contact endpoint**
+- File: `src/app/api/matches/request/route.ts`.
+- Steps: (i) require a session — call `getSession()` and return `401` if absent (the match flow already anticipates "account creation may be needed at this point"). (ii) Rate-limit per user + IP; implement the Session 5 target of **10 contact-requests/hour/user** with a minimal limiter now (in-memory map or a store-backed counter), return `429` when exceeded. (iii) Only return the tutor's `phone`/`email` in the JSON to an authenticated parent. Preserve the existing dedupe + 48h `hiddenUntil` logic.
+- Acceptance: unauthenticated POST → `401`; more than the hourly limit → `429`; tutor phone/email is never returned to an anonymous caller.
+
+**2d — Privacy claims encryption the storage doesn't have**
+- Files: `src/app/legal/privacy/page.tsx` (the "stored encrypted at rest" sentence), context in `src/lib/uploads.ts` (local filesystem).
+- Step: until real encrypted object storage exists (Technical roadmap — "Real storage (Supabase/S3) with at-rest encryption"), change the copy to describe reality, e.g. "documents are stored with admin-only access via signed URLs; at-rest encryption is being implemented before public launch." **Alternatively**, disable the document-upload UI until encrypted storage lands. Do not claim encryption you don't have.
+- Acceptance: the Privacy page contains no unqualified "encrypted at rest" claim while uploads live on local disk.
+
+**Guardrails (all of 2):** these are security fixes — don't "work around" them (e.g. don't leave a debug bypass). If you add a rate limiter, make it fail-closed on its own errors, not fail-open.
+
+---
+
+### Blocker 3 🟠 — Legal pages describe systems that don't exist / fees not in Terms
+
+**Goal:** Make the legal copy true, and make sure every amount the code can charge is in the contract the tutor accepted.
+
+**3a — audit-trail claims**
+- Files: `src/app/legal/terms/page.tsx` (§5) and `src/app/legal/child-safety/page.tsx` assert IP / user-agent / audit-log retention; `src/app/api/tutor/applications/route.ts` currently stores none of that.
+- Step (recommended): start capturing it now — on application create, read `req.headers.get("x-forwarded-for")` (fall back to the connecting IP) and `req.headers.get("user-agent")`, and persist them plus the already-stored `termsAcceptedVersion` on the application row. That makes the "self-attestation under audit risk" model real. If you'd rather defer, instead soften the copy to claim only what's stored (the accepted Terms version) and drop the IP/UA claims until Session 5.
+- Acceptance: the audit-trail language in Terms/Child-Safety matches what a row actually contains.
+
+**3b — strike / reinstatement fees missing from Terms**
+- Files: `src/lib/strike.ts` charges a **$20 reinstatement** to reappear after strikes 1–3 and forces the **perpetual $20 rate (no honesty discount)** after strike 3; `src/app/legal/terms/page.tsx` §2/§3 don't mention any of it.
+- Step: add the strike schedule and its fees to Terms §2/§3 — the 7-day / 30-day / permanent hide, the $20-to-reappear fee, and the permanent loss of the honesty discount after the third strike. A fee can't be charged unless the tutor agreed to it.
+- Acceptance: **every** amount the code can charge appears in the Terms — commission $20/$15, Permanent $60, reinstatement $20, and post-strike-3 $20. Cross-check against `commissionCents()` and `applyStrike()` in `src/lib/strike.ts`.
+
+---
+
+### Blocker 4 🟠 — Real schools published live without permission
+
+**Goal:** No real-named school is publicly active until permission evidence is on file.
+
+**Files:** `src/lib/schools.ts` (`SEED_SCHOOLS` — Killara High School and Masada College, both `active: true`) and `prisma/seed.ts` (writes them live).
+
+**Steps:**
+1. In `src/lib/schools.ts`, set `active: false` on both seed schools.
+2. In `prisma/seed.ts`, make the upsert refuse to set `active: true` for any school lacking a `permissionEvidenceUrl` (the field already exists on the `School` model). Schools become publicly active only after an admin adds permission evidence via `/admin/schools`.
+
+**Acceptance:**
+- [ ] A fresh seed run leaves no real-named school publicly active.
+- [ ] Activating a school requires permission evidence recorded on the row.
+
+---
+
+### Definition of Done (Session 0)
+- [ ] Blockers 1 and 2 (all 🔴) fixed, each in its own commit, `npm run build` green.
+- [ ] Blockers 3 and 4 (🟠) fixed or explicitly deferred **with founder sign-off recorded in the decision log**.
+- [ ] Terms §11 and the strike-fee schedule reconciled with the code; Privacy encryption claim reconciled with storage reality.
+- [ ] For Blocker 1 Option B only: counsel sign-off recorded before merge.
+- [ ] Top-of-README blocker table updated to strike through cleared items (leave the row, mark it ✅ done, so the history is visible).
+
+---
+
 ## Pivot work plan — what changes in the code
 
 Realistic estimate: **4–5 focused sessions of work**. Below is the session breakdown. Each session bakes in the engineering principles above — automation and legal-risk minimization are not separate work, they're built into every step.
@@ -697,7 +852,8 @@ Goal: build the post-match resolution flow (self-report, parent confirmation, st
 - [ ] Public tutor profile page does NOT show WWCC info (or any platform-stamped verification)
 - [ ] `/tutors/[id]` shows a "Verify this tutor's WWCC yourself with the NSW OCG" link next to where verification was
 - [ ] Admin approval queue copy reframed to "spam/abuse moderation" — no credential review
-- [ ] Under-18 auto-reject removed; replaced with required age tickbox attestation on signup
+- [x] Under-18 auto-reject **removed** (commit `73a83fa`)
+- [ ] ⚠️ **NOT DONE — launch blocker 1:** the required age-attestation tickbox that was meant to *replace* the auto-reject was never built. Right now nothing gates DOB at all, yet Terms §11 still promises under-18 applications are "automatically rejected." Either reinstate the API-layer reject or ship the attestation **and** reconcile Terms §11 + Privacy before launch.
 - [ ] Verification document upload block removed from signup form (it's all private uploads now, optional)
 - [ ] Indemnity clause updated in Terms — narrower scope, directory framing
 - [ ] Privacy Policy updated to reflect reduced data collection
@@ -780,7 +936,7 @@ What's working end-to-end right now in the pre-pivot code:
 - **Unlock confirm page** at `/unlock/[tutorId]` with the same refund explainer — the actual $20 charge is a stub until Stripe is wired.
 - **Auth** — sign up, log in, log out. HMAC-signed cookie sessions, `scrypt` password hashing, password show/hide toggle. Admin promotion via `ADMIN_EMAILS` env allowlist. Storage is a local JSON file (`data/users.json`).
 - **Tutor signup form** with full validation:
-  - 18+ age gate — under-18 submissions are **auto-rejected** at the API layer with reviewer notes recording the date of birth and computed age. The application row is stored (not silently dropped) so there's an audit trail, and the tutor sees an explicit rejection banner in their dashboard. Same logic applies on profile edit.
+  - 18+ age gate — under-18 submissions are **auto-rejected** at the API layer with reviewer notes recording the date of birth and computed age. The application row is stored (not silently dropped) so there's an audit trail, and the tutor sees an explicit rejection banner in their dashboard. Same logic applies on profile edit. **⚠️ Historical/stale: this reject was removed in commit `73a83fa` and NOT replaced — see launch blocker 1 at the top. The current code does not gate DOB.**
   - WWCC details, ATAR, HSC results
   - "High school attended" with conditional "Other school" free text
   - Per-subject year-level selection + "All years" toggle (subjects offered must be a subset of subjects sat)
